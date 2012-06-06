@@ -1,0 +1,217 @@
+#!/usr/bin/env python
+
+# lots of imports
+from pyminc.volumes.factory import *
+from numpy import *
+import sys
+import subprocess
+import tempfile
+from optparse import OptionParser, OptionGroup
+import cython_laplace # and the cython version
+
+
+if __name__ == "__main__":
+
+    usage = "%prog [options] input-grid.mnc output-solved.mnc"
+    description = """
+All the glories of Laplace's equation for measuring cortical thickness
+- as initially described in:
+
+Jones SE, Buchbinder BR, Aharon I. Three-dimensional mapping of
+cortical thickness using Laplace's equation. Hum Brain Mapp. 2000
+Sep;11(1):12-32.
+
+and modified somewhat in:
+
+Lerch JP, Carroll JB, Dorr A, Spring S, Evans AC, Hayden MR, Sled JG,
+Henkelman RM. Cortical thickness measured from MRI in the YAC128 mouse
+model of Huntington's disease. Neuroimage. 2008 Jun;41(2):243-51.
+"""
+
+    # argument handling - an option chooses which way to do the computation
+    parser = OptionParser(usage=usage, description=description)
+
+    grid_group = OptionGroup(parser, "Label values of the input grid")
+    default_inside = 0
+    default_middle = 5
+    default_outside = 10
+    default_resistive = 20
+
+    grid_group.add_option("--inside-boundary", dest="inside",
+                          help="value of the inside boundary in the grid "
+                          "[default: %default]",
+                          type="int", default=default_inside)
+    grid_group.add_option("--outside-boundary", dest="outside",
+                          help="value of the outside boundary in the grid "
+                          "[default: %default]",
+                          type="int", default=default_outside)
+    grid_group.add_option("--label-to-be-solved", dest="middle",
+                          help="value of the label to be solved "
+                          "[default: %default]",
+                          type="int", default=default_middle)
+    grid_group.add_option("--resistive-boundary", dest="resistive",
+                          help="value of the resistive boundary "
+                          "[default: %default]",
+                          type="int", default=default_resistive)
+    parser.add_option_group(grid_group)
+    
+    solver_group = OptionGroup(parser, "Controlling the solver")
+    solver_group.add_option("--maximum-iterations", dest="maxiterations",
+                            help="maximum number of iterations in solving the "
+                            "equation [default: %default]",
+                            type="int", default=300)
+    solver_group.add_option("--convergence-criteria", dest="convergence",
+                            help="stop criteria for relaxation convergence "
+                            "[default: %default]",
+                            type="float", default=0.001)
+    parser.add_option_group(solver_group)
+
+    output_group = OptionGroup(parser, "Output options")
+    output_group.add_option("--output-relaxation", dest="output_relaxation",
+                            help="Output the relaxed equation to the "
+                            "specified filename",
+                            type="string", default=None)
+    output_group.add_option("--stop-after-relaxation", dest="relaxation_stop",
+                            help="Stop after relaxing the equation (i.e. dont't"
+                            " estimate thickness.",
+                            action="store_true", default=False)
+    parser.add_option_group(output_group)
+
+    surface_group = OptionGroup(parser, "Surfaces options")
+    surface_group.add_option("--solve-at-vertices", dest="use_surface",
+                             help="Estimate thickness at every vertex of the "
+                             "specified surface. Note: if this options is "
+                             "used then the output will be a text file "
+                             "rather than a MINC volume.",
+                             type="string", default=None)
+    parser.add_option_group(surface_group)
+
+    # TODO: add control of outputing relaxed equation, gradients, etc
+
+    (options, args) = parser.parse_args()
+    if len(args) != 2:
+        parser.error("Incorrect number of arguments")
+        
+    # option sanity checking - insist that --output-relaxation must be
+    # specified if --stop-after-relaxation was invoked.
+    if options.relaxation_stop==True and options.output_relaxation==None:
+        parser.error("If --stop-after-relaxation was specified then "
+                     "the output filename needs to be given by the "
+                     "--output-relaxation option.")
+
+    gridfile = args[0]
+    outputfile = args[1]
+
+    # get the grid/label volume
+    grid = volumeFromFile(gridfile, dtype='ubyte')
+
+    # if using a surface to determine thickness values, load the surface
+    # points and create an output array of the same length
+    if options.use_surface:
+        # dump the coordinates of the surface to a file
+        tf = tempfile.mkstemp()[1] # temporary filename
+        subprocess.call(["dump_points", options.use_surface, tf, "ascii"])
+        verticesWorld = genfromtxt(tf) # a numpy func that will return an array
+        verticesVoxel = zeros_like(verticesWorld)
+        # vertices are in world coordinates - convert to voxel coordinates
+        for i in range(verticesWorld.shape[0]):
+            verticesVoxel[i,:] = grid.convertWorldToVoxel(verticesWorld[i,:])
+        output = zeros(verticesWorld.shape[0])
+
+    # if not using a surface, create an output MINC volume of the same
+    # dimensions as the input grid
+    else:
+        output = volumeLikeFile(gridfile, outputfile)
+
+    if options.output_relaxation:
+        relaxation = volumeLikeFile(gridfile, options.output_relaxation)
+    elif options.use_surface:
+        # create another temp file and use it to hold the relaxation vals
+        tf2 = tempfile.mkstemp()[1]
+        relaxation = volumeLikeFile(gridfile, tf2)
+    else:
+        relaxation = output
+
+    
+    # test to make sure that the dimensions make sense or are correct
+    dimsizes = grid.sizes[0:3]
+    if (dimsizes[0] == 1 or dimsizes[1] == 1):
+        parser.error("While this program happily accepts a 2D file (which, "
+                     "in reality, is a 3D file with one dimension haveing a "
+                     "length of 1), it can only deal with the last dimension "
+                     "being the smallest. mincreshape -dimorder is your friend")
+    elif dimsizes[2] == 0:
+        parser.error("While this program can work in 2D mode, it can at "
+                     "moment only deal with a 3D volume where the last "
+                     "dimension has a length of 1. mincreshape is your friend")
+
+    # remap the labels if necessary
+    if ( options.inside    == default_inside and
+         options.outside   == default_outside and
+         options.middle    == default_middle and
+         options.resistive == default_resistive ):
+        pass # do nothing if all the defaults are kept
+    else:
+        # remap
+        newgrid = volumeLikeFile(gridfile, "test-labels.mnc", dtype='ubyte')
+        newgrid.data[:,:,:] = zeros_like(output.data, dtype=uint8)
+        newgrid.data[grid.data == options.inside] = default_inside
+        newgrid.data[grid.data == options.outside] = default_outside
+        newgrid.data[grid.data == options.middle] = default_middle
+        newgrid.data[grid.data == options.resistive] = default_resistive
+        
+        
+        grid.data[:,:,:] = newgrid.data[:,:,:]
+        newgrid.writeFile()
+        newgrid.closeVolume()
+    
+    # initialize the output to the boundaries
+    relaxation.data[:,:,:] = grid.data[:,:,:]
+
+    # allocate the matrices for the three gradients
+    dv0 = zeros_like(relaxation.data)
+    dv1 = zeros_like(relaxation.data)
+    dv2 = zeros_like(relaxation.data)
+
+    # TODO: make the resistive boundary optional
+    # TODO: implement convergence criteria
+
+    # relax the equation
+    cython_laplace.iterateLaplace(grid.data, relaxation.data,
+                                  options.maxiterations,
+                                  0)
+
+
+    # stop here if the user only wants the relaxation
+    if options.relaxation_stop:
+        sys.exit(0)
+
+    # compute the gradients
+    cython_laplace.computeGradients(grid.data, relaxation.data, dv0, dv1, dv2)
+
+    # user wanted to save the relaxed equation. Fine. Be that way.
+    if options.output_relaxation:
+        relaxation.writeFile()
+        relaxation.closeVolume()
+
+    # compute streamlines at every vertex, if so desired
+    if options.use_surface:
+        print "Computing streamlines at every vertex ..."
+        cython_laplace.computeStreamlinesFromList(grid.data,
+                                                  verticesVoxel,
+                                                  output,
+                                                  dv0, dv1, dv2, 0.1)
+        # measured thickness is in voxels-multiply by step size to get it in mm
+        output = output * grid.separations[1]
+        savetxt(outputfile,output)
+    # otheriwse compute the streamlines at every voxel
+    else:
+        print "Computing streamlines at every voxel ..."
+        cython_laplace.computeAllStreamlines(grid.data, output.data,
+                                             dv0, dv1, dv2, 0.1)
+        
+        # measured thickness is in voxels-multiply by step size to get it in mm
+        output.data = output.data * output.separations[1]
+        output.writeFile()
+        output.closeVolume()
+    grid.closeVolume()
