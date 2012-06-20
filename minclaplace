@@ -4,10 +4,26 @@
 from pyminc.volumes.factory import *
 from numpy import *
 import sys
+import os
 import subprocess
 import tempfile
 from optparse import OptionParser, OptionGroup
 import cython_laplace # and the cython version
+
+def readObjVertices(filename):
+    # dump the coordinates of the surface to a file
+    tf = tempfile.mkstemp()[1] # temporary filename
+    subprocess.call(["dump_points", filename, tf, "ascii"])
+    verticesWorld = genfromtxt(tf) # a numpy func that will return an array
+    os.remove(tf) # delete the temporary file
+    return(verticesWorld)
+
+def convertAllWorldToVoxel(coords, mincvol):
+    verticesVoxel = zeros_like(coords)
+    # vertices are in world coordinates - convert to voxel coordinates
+    for i in range(coords.shape[0]):
+        verticesVoxel[i,:] = mincvol.convertWorldToVoxel(coords[i,:])
+    return(verticesVoxel)
 
 
 if __name__ == "__main__":
@@ -84,9 +100,20 @@ model of Huntington's disease. Neuroimage. 2008 Jun;41(2):243-51.
                              "used then the output will be a text file "
                              "rather than a MINC volume.",
                              type="string", default=None)
+    surface_group.add_option("--create-surface", dest="create_surface",
+                             help="Create a surface using marching cubes - "
+                             "give the filename which will hold the created "
+                             "surface",
+                             type="string", default=None)
+    surface_group.add_option("--create-surface-range", 
+                             dest="create_surface_range",
+                             help="If using the --create-surface argument "
+                             "you can specify the upper and lower range to "
+                             "be passed on to marching_cubes. These values "
+                             "should be between 0 (inner boundary) and 10 "
+                             "(outer boundary) [default: %default].",
+                             type="float", nargs=2, default=[4.5, 5.5])
     parser.add_option_group(surface_group)
-
-    # TODO: add control of outputing relaxed equation, gradients, etc
 
     (options, args) = parser.parse_args()
     if len(args) != 2:
@@ -105,31 +132,25 @@ model of Huntington's disease. Neuroimage. 2008 Jun;41(2):243-51.
     # get the grid/label volume
     grid = volumeFromFile(gridfile, dtype='ubyte')
 
-    # if using a surface to determine thickness values, load the surface
-    # points and create an output array of the same length
-    if options.use_surface:
-        # dump the coordinates of the surface to a file
-        tf = tempfile.mkstemp()[1] # temporary filename
-        subprocess.call(["dump_points", options.use_surface, tf, "ascii"])
-        verticesWorld = genfromtxt(tf) # a numpy func that will return an array
-        verticesVoxel = zeros_like(verticesWorld)
-        # vertices are in world coordinates - convert to voxel coordinates
-        for i in range(verticesWorld.shape[0]):
-            verticesVoxel[i,:] = grid.convertWorldToVoxel(verticesWorld[i,:])
-        output = zeros(verticesWorld.shape[0])
-
-    # if not using a surface, create an output MINC volume of the same
-    # dimensions as the input grid
+    # create a boolean regarding whether to use surfaces
+    if options.use_surface or options.create_surface:
+        surfaceMode = True
     else:
-        output = volumeLikeFile(gridfile, outputfile)
+        surfaceMode = False
 
+    # create a new volume to hold the relaxation if requested
     if options.output_relaxation:
         relaxation = volumeLikeFile(gridfile, options.output_relaxation)
-    elif options.use_surface:
+        tmpRelaxationFile = options.output_relaxation
+    elif surfaceMode:
+        # if relaxation is not to be outputted and surfaces are bring used then
         # create another temp file and use it to hold the relaxation vals
-        tf2 = tempfile.mkstemp()[1]
-        relaxation = volumeLikeFile(gridfile, tf2)
+        tmpRelaxationFile = tempfile.mkstemp()[1]
+        relaxation = volumeLikeFile(gridfile, tmpRelaxationFile)
     else:
+        # if not using a surface, create an output MINC volume of the same
+        # dimensions as the input grid and put relaxation data here
+        output = volumeLikeFile(gridfile, outputfile)
         relaxation = output
 
     
@@ -190,12 +211,26 @@ model of Huntington's disease. Neuroimage. 2008 Jun;41(2):243-51.
     cython_laplace.computeGradients(grid.data, relaxation.data, dv0, dv1, dv2)
 
     # user wanted to save the relaxed equation. Fine. Be that way.
-    if options.output_relaxation:
+    if options.output_relaxation or surfaceMode:
         relaxation.writeFile()
         relaxation.closeVolume()
 
-    # compute streamlines at every vertex, if so desired
+    # if using a surface to determine thickness values, load the surface
+    # points and create an output array of the same length.
+    # Create the surface first if so requested.
+    if options.create_surface:
+        subprocess.call(["marching_cubes", tmpRelaxationFile,
+                         options.create_surface, 
+                         str(options.create_surface_range[0]),
+                         str(options.create_surface_range[1])])
+        options.use_surface = options.create_surface 
+
     if options.use_surface:
+        verticesWorld = readObjVertices(options.use_surface)
+        verticesVoxel = convertAllWorldToVoxel(verticesWorld, grid)
+        output = zeros(verticesWorld.shape[0])
+        
+        # no go ahead and compute the streamlines at every vertex
         print "Computing streamlines at every vertex ..."
         cython_laplace.computeStreamlinesFromList(grid.data,
                                                   verticesVoxel,
@@ -204,7 +239,7 @@ model of Huntington's disease. Neuroimage. 2008 Jun;41(2):243-51.
         # measured thickness is in voxels-multiply by step size to get it in mm
         output = output * grid.separations[1]
         savetxt(outputfile,output)
-    # otheriwse compute the streamlines at every voxel
+    # no surface being used, work volumetrically
     else:
         print "Computing streamlines at every voxel ..."
         cython_laplace.computeAllStreamlines(grid.data, output.data,

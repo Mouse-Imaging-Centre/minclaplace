@@ -2,7 +2,7 @@ minclaplace
 ===========
 
 All the glories of Laplace's equation for measuring cortical thickness
-- as initially described in:
+as initially described in:
 
 Jones SE, Buchbinder BR, Aharon I. Three-dimensional mapping of
 cortical thickness using Laplace's equation. Hum Brain Mapp. 2000
