@@ -43,7 +43,7 @@ cdef double cythonLaplaceStep(np.ndarray[BDTYPE_t, ndim=3] g,
     cdef int v0, v1, v2
 
     cdef double convergence = 0.0
-    cdef double oldvalue, tmpvalue
+    cdef double oldvalue, tmpvalue, newvalue
     cdef double counter = 0
     cdef unsigned char gridvoxel
     cdef float thirdboundary = 19.9
@@ -76,8 +76,15 @@ cdef double cythonLaplaceStep(np.ndarray[BDTYPE_t, ndim=3] g,
                     if g[v0,v1,v2-1] < thirdboundary and nv2 > 1:
                         counter += 1
                         tmpvalue += o[v0,v1,v2-1]
-
-                    o[v0,v1,v2] = tmpvalue / counter
+                    
+                    tmpvalue = tmpvalue / counter
+                    oldvalue = o[v0,v1,v2]
+                    # over-relaxation:
+                    newvalue = oldvalue + 1.666 * ( tmpvalue - oldvalue )
+                    if newvalue < 0 or newvalue > 10:
+                        o[v0,v1,v2] = tmpvalue
+                    else:
+                        o[v0,v1,v2] = newvalue
                     convergence += abs(oldvalue - o[v0,v1,v2])
     return(convergence)
 
@@ -420,6 +427,8 @@ def computeGradients(np.ndarray[BDTYPE_t, ndim=3] g, #grid
                         d2 = o[v0,v1,v2+1] - o[v0,v1,v2-1]
                         
                         mag = sqrt( (d0*d0) + (d1*d1) + (d2*d2) )
+                        if mag == 0:
+                            mag = mag + 1e-7
                         dv0[v0,v1,v2] = d0 / mag
                         dv1[v0,v1,v2] = d1 / mag
                         dv2[v0,v1,v2] = d2 / mag
@@ -433,6 +442,8 @@ def computeGradients(np.ndarray[BDTYPE_t, ndim=3] g, #grid
                     d2 = o[v0,v1,v2+1] - o[v0,v1,v2-1]
                     
                     mag = sqrt( (d0*d0) + (d1*d1) + (d2*d2) )
+                    if mag == 0:
+                        mag = mag + 1e-7
                     dv0[v0,v1,v2] = d0 / mag
                     dv1[v0,v1,v2] = d1 / mag
                     dv2[v0,v1,v2] = d2 / mag
@@ -454,5 +465,8 @@ def iterateLaplace(np.ndarray[BDTYPE_t, ndim=3] g,
         # call a single relaxation step and multiple output by the
         # normalization factor for convergence checking
         convergence = cythonLaplaceStep(g, o) * normalize_factor
-        print "iteration", i, ":", convergence
+        print "iteration", i, ":", convergence, "criteria:", convergence_criteria
+        if convergence < convergence_criteria:
+            print "Converged."
+            break
 

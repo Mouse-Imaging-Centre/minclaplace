@@ -174,8 +174,9 @@ model of Huntington's disease. Neuroimage. 2008 Jun;41(2):243-51.
         pass # do nothing if all the defaults are kept
     else:
         # remap
-        newgrid = volumeLikeFile(gridfile, "test-labels.mnc", dtype='ubyte')
-        newgrid.data[:,:,:] = zeros_like(output.data, dtype=uint8)
+        tmpgrid = tempfile.mkstemp()[1]
+        newgrid = volumeLikeFile(gridfile, tmpgrid, dtype='ubyte')
+        newgrid.data[:,:,:] = zeros_like(grid.data, dtype=uint8)
         newgrid.data[grid.data == options.inside] = default_inside
         newgrid.data[grid.data == options.outside] = default_outside
         newgrid.data[grid.data == options.middle] = default_middle
@@ -185,6 +186,7 @@ model of Huntington's disease. Neuroimage. 2008 Jun;41(2):243-51.
         grid.data[:,:,:] = newgrid.data[:,:,:]
         newgrid.writeFile()
         newgrid.closeVolume()
+        os.remove(tmpgrid)
     
     # initialize the output to the boundaries
     relaxation.data[:,:,:] = grid.data[:,:,:]
@@ -198,14 +200,10 @@ model of Huntington's disease. Neuroimage. 2008 Jun;41(2):243-51.
     # TODO: implement convergence criteria
 
     # relax the equation
+    print "CONVERGENCE:", options.convergence
     cython_laplace.iterateLaplace(grid.data, relaxation.data,
                                   options.maxiterations,
-                                  0)
-
-
-    # stop here if the user only wants the relaxation
-    if options.relaxation_stop:
-        sys.exit(0)
+                                  options.convergence)
 
     # compute the gradients
     cython_laplace.computeGradients(grid.data, relaxation.data, dv0, dv1, dv2)
@@ -215,14 +213,29 @@ model of Huntington's disease. Neuroimage. 2008 Jun;41(2):243-51.
         relaxation.writeFile()
         relaxation.closeVolume()
 
+    # stop here if the user only wants the relaxation
+    if options.relaxation_stop:
+        sys.exit(0)
+
+
     # if using a surface to determine thickness values, load the surface
     # points and create an output array of the same length.
     # Create the surface first if so requested.
     if options.create_surface:
-        subprocess.call(["marching_cubes", tmpRelaxationFile,
-                         options.create_surface, 
+        tf1 = tempfile.mkstemp()[1]
+        tf2 = tempfile.mkstemp()[1]
+
+        print "huh?", tmpRelaxationFile, tf1, tf2
+        subprocess.call(["mincmath", "-clobber", "-seg", "-const2",
                          str(options.create_surface_range[0]),
-                         str(options.create_surface_range[1])])
+                         str(options.create_surface_range[1]),
+                         tmpRelaxationFile, tf1])
+        subprocess.call(["mincskel", tf1, tf2])
+        subprocess.call(["marching_cubes", tf2,
+                         options.create_surface])
+
+        os.remove(tf1)
+        os.remove(tf2)
         options.use_surface = options.create_surface 
 
     if options.use_surface:
