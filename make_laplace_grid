@@ -1,0 +1,93 @@
+#!/usr/bin/env python
+
+# lots of imports
+from __future__ import print_function
+
+from pyminc.volumes.factory import *
+import numpy as np
+from scipy.ndimage.morphology import binary_dilation, binary_closing
+from scipy.ndimage.measurements import label
+from argparse import ArgumentParser
+import csv
+import sys
+import tempfile
+from os.path import exists
+
+if __name__ == "__main__":
+    description = "converts a set of labels into the grid required by minclaplace"
+    
+    parser = ArgumentParser(description=description)
+
+    # the options
+    parser.add_argument("-v", "--verbose", help="Spit out verbose output", action="store_true")
+    parser.add_argument("--clobber", help="Overwrite existing file", action="store_true")
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("-r", "--right", help="Output grid for right side (default)",
+                       action="store_const", const="right label", dest="side", default="right label")
+    group.add_argument("-l", "--left", help="Output grid for left side",
+                       action="store_const", const="left label", dest="side")
+    parser.add_argument("--binary_closing", help="Run binary closing on cortex (middle) to remove holes",
+                        action="store_true")
+
+    # the positional arguments
+    parser.add_argument("input_labels", help="The labels as MINC volume")
+    parser.add_argument("label_mapping", help="The mapping from label to grid as a CSV file")
+    parser.add_argument("output", help="Filename for the output MINC volume")
+
+    args = parser.parse_args()
+
+    # check for file existence and clobber
+    if exists(args.output) and not args.clobber:
+        print("Output file exists and --clobber not specified", file=sys.stderr)
+        sys.exit(1)
+
+    # default values for output grid. Not modifiable via options at the moment, but could be changed later
+    mapping = { "outside" : 10,
+                "inside" : 0,
+                "middle" : 5,
+                "resistive" : 20,
+                "middle adjacent resistive" : 5 }
+
+    # open/create volumes
+    labelVolume = volumeFromFile(args.input_labels, dtype='ushort')
+    outputVolume = volumeLikeFile(args.input_labels, args.output)
+    
+    # create a temporary volume that will hold the "middle adjacent resistive" labels for later dilation
+    MARfile = tempfile.mkstemp()[1]
+    MARVolume = volumeLikeFile(args.input_labels, MARfile)
+    #MARVolume = volumeLikeFile(args.input_labels, "testresistive.mnc")
+
+    # initialize all output voxels to be "outside"
+    outputVolume.data[::] = mapping["outside"]
+
+    # initialize middle-adjacent-resistive boundary to be 0
+    MARVolume.data[::] = 0
+
+    # open the CSV file containing the label definitions
+    with open(args.label_mapping) as csvfile:
+        reader = csv.DictReader(csvfile)
+        for row in reader:
+            if args.verbose:
+                print(row["Structure"], row["boundary"])
+            
+            outputVolume.data[labelVolume.data == float(row[args.side])] = mapping[row["boundary"]]
+            if row["boundary"] == "middle adjacent resistive":
+                MARVolume.data[labelVolume.data == float(row[args.side])] = 1
+
+    # dilate the binary middle adjacent resistive volume
+    MARVolume.data[::] = binary_dilation(MARVolume.data, iterations=4)
+    # where the dilated resistive volume overlaps with the inside label, call that resistive.
+    outputVolume.data[ (MARVolume.data == 1) & (outputVolume.data == mapping["inside"]) ] = mapping["resistive"]
+
+    # remove holes using a single iteration of a binary closing algorithm
+    if args.binary_closing:
+        # reuse the MARVolume here since we have it around and already taking up memory
+        MARVolume.data[::] = outputVolume.data == mapping["middle"]
+        MARVolume.data[::] = binary_closing(MARVolume.data, iterations=1)
+        outputVolume.data[MARVolume.data == 1] = mapping["middle"]
+
+    labelVolume.closeVolume()
+    outputVolume.writeFile()
+    outputVolume.closeVolume()
+    #MARVolume.writeFile()
+    MARVolume.closeVolume()
