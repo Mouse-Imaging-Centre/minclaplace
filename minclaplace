@@ -200,7 +200,7 @@ model of Huntington's disease. Neuroimage. 2008 Jun;41(2):243-51.
     # TODO: implement convergence criteria
 
     # relax the equation
-    print "CONVERGENCE:", options.convergence
+    print("CONVERGENCE: %s" % options.convergence)
     cython_laplace.iterateLaplace(grid.data, relaxation.data,
                                   options.maxiterations,
                                   options.convergence)
@@ -225,7 +225,7 @@ model of Huntington's disease. Neuroimage. 2008 Jun;41(2):243-51.
         tf1 = tempfile.mkstemp()[1]
         tf2 = tempfile.mkstemp()[1]
 
-        print "huh?", tmpRelaxationFile, tf1, tf2
+        #print("huh?", tmpRelaxationFile, tf1, tf2)
         subprocess.check_call(["mincmath", "-clobber", "-seg", "-const2",
                                str(options.create_surface_range[0]),
                                str(options.create_surface_range[1]),
@@ -244,7 +244,7 @@ model of Huntington's disease. Neuroimage. 2008 Jun;41(2):243-51.
         output = zeros(verticesWorld.shape[0])
         
         # no go ahead and compute the streamlines at every vertex
-        print "Computing streamlines at every vertex ..."
+        print("Computing streamlines at every vertex ...")
         cython_laplace.computeStreamlinesFromList(grid.data,
                                                   verticesVoxel,
                                                   output,
@@ -254,7 +254,7 @@ model of Huntington's disease. Neuroimage. 2008 Jun;41(2):243-51.
         savetxt(outputfile,output)
     # no surface being used, work volumetrically
     else:
-        print "Computing streamlines at every voxel ..."
+        print("Computing streamlines at every voxel ...")
         cython_laplace.computeAllStreamlines(grid.data, output.data,
                                              dv0, dv1, dv2, 0.1)
         
