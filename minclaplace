@@ -13,7 +13,7 @@ import cython_laplace # and the cython version
 def readObjVertices(filename):
     # dump the coordinates of the surface to a file
     tf = tempfile.mkstemp()[1] # temporary filename
-    subprocess.call(["dump_points", filename, tf, "ascii"])
+    subprocess.check_call(["dump_points", filename, tf, "ascii"])
     verticesWorld = genfromtxt(tf) # a numpy func that will return an array
     os.remove(tf) # delete the temporary file
     return(verticesWorld)
@@ -226,13 +226,13 @@ model of Huntington's disease. Neuroimage. 2008 Jun;41(2):243-51.
         tf2 = tempfile.mkstemp()[1]
 
         print "huh?", tmpRelaxationFile, tf1, tf2
-        subprocess.call(["mincmath", "-clobber", "-seg", "-const2",
-                         str(options.create_surface_range[0]),
-                         str(options.create_surface_range[1]),
-                         tmpRelaxationFile, tf1])
-        subprocess.call(["mincskel", tf1, tf2])
-        subprocess.call(["marching_cubes", tf2,
-                         options.create_surface])
+        subprocess.check_call(["mincmath", "-clobber", "-seg", "-const2",
+                               str(options.create_surface_range[0]),
+                               str(options.create_surface_range[1]),
+                               tmpRelaxationFile, tf1])
+        subprocess.check_call(["mincskel", tf1, tf2])
+        subprocess.check_call(["marching_cubes", tf2,
+                               options.create_surface])
 
         os.remove(tf1)
         os.remove(tf2)
